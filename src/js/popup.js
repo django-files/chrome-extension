@@ -1,6 +1,6 @@
 // JS for popup.html
 
-import { openSidePanel, showToast } from './exports.js'
+import { debounce, openExtPanel, openSidePanel, showToast } from './exports.js'
 
 import {
     Uppy,
@@ -20,7 +20,7 @@ document
     .addEventListener('click', deleteConfirm)
 document
     .querySelectorAll('a[href]')
-    .forEach((el) => el.addEventListener('click', popupLinks))
+    .forEach((el) => el.addEventListener('click', linkClick))
 document
     .querySelectorAll('input')
     .forEach((el) => el.addEventListener('change', saveOptions))
@@ -33,11 +33,19 @@ document
 
 document.querySelectorAll('.modal').forEach((el) =>
     el.addEventListener('shown.bs.modal', (event) => {
+        // noinspection JSUnresolvedReference
         const input = event.target?.querySelector('input')
         input?.focus()
         input?.select()
     })
 )
+
+async function windowResize() {
+    // console.debug('windowResize:', event)
+    const panelSize = `${window.outerWidth}x${window.outerHeight}`
+    console.debug('panelSize:', panelSize)
+    await chrome.storage.local.set({ panelSize })
+}
 
 const filesTable = document.getElementById('files-table')
 const authAlert = document.getElementById('auth-alert')
@@ -51,8 +59,12 @@ const ctxMenuRow = document.getElementById('ctx-menu-row')
 const expireInput = document.getElementById('expire-input')
 const passwordInput = document.getElementById('password-input')
 const sidePanel = document.getElementById('side-panel')
+const popOut = document.getElementById('pop-out')
+const popIn = document.getElementById('pop-in')
 
 sidePanel.addEventListener('click', openSidePanel)
+popOut?.addEventListener('click', popOutClick)
+popIn?.addEventListener('click', popInClick)
 
 const deleteModal = bootstrap.Modal.getOrCreateInstance('#delete-modal')
 const expireModal = bootstrap.Modal.getOrCreateInstance('#expire-modal')
@@ -63,7 +75,8 @@ const faHourglass = document.querySelector('.clone > i.fa-hourglass')
 const faLock = document.querySelector('.clone > i.fa-lock')
 const faKey = document.querySelector('.clone > i.fa-key')
 
-const clipboard = new ClipboardJS('.clip')
+// noinspection TypeScriptUMDGlobal
+const clipboard = new ClipboardJS('.clip') // NOSONAR
 clipboard.on('success', () => showToast('Copied to Clipboard'))
 clipboard.on('error', () => showToast('Clipboard Copy Failed', 'warning'))
 
@@ -85,35 +98,48 @@ async function initPopup(event) {
     mouseRow = null
     errorAlert.classList.add('d-none')
 
+    const { popupView } = await chrome.storage.local.get(['popupView'])
+    console.debug('popupView:', popupView)
+
+    if (popupView !== 'popup') {
+        sidePanel.classList.add('d-none')
+        popOut.classList.add('d-none')
+        popIn.classList.remove('d-none')
+        window.addEventListener('resize', debounce(windowResize))
+    }
+
     // Options
     const { options } = await chrome.storage.sync.get(['options'])
     console.debug('options:', options)
     document.getElementById('popupPreview').checked = options.popupPreview
     const platform = await chrome.runtime.getPlatformInfo()
-    if (platform.os !== 'android') {
+    if (platform.os !== 'android' && popupView === 'popup') {
         document.body.style.width = `${options.popupWidth}px`
+        console.debug(`%c SET: width: ${options.popupWidth}`, 'color: Yellow')
         if (options.popupSidePanel) {
             sidePanel.classList.remove('d-none')
         }
-    } else {
+    }
+    if (platform.os === 'android') {
         document.documentElement.style.fontSize = '1.3rem'
         document
             .querySelectorAll('.hover-menu > a')
             .forEach((el) => el.classList.add('px-1'))
+        console.debug('%c SET: fontSize: 1.3rem + px-1', 'color: Orange')
     }
 
     // Manifest
-    const manifest = chrome.runtime.getManifest()
-    const imgLink = document.querySelector('.head img').closest('a')
-    imgLink.href = manifest.homepage_url
-    imgLink.title = `v${manifest.version}`
-    const titleLink = document.querySelector('.head h4 a')
-    titleLink.href = manifest.homepage_url
+    // const manifest = chrome.runtime.getManifest()
+    const imgLink = document.getElementById('img-link')
+    // imgLink.href = manifest.homepage_url
+    // imgLink.title = `v${manifest.version}`
 
     // Title Link
+    // const titleLink = document.querySelector('.head h4 a')
+    // titleLink.href = manifest.homepage_url
     if (options.siteUrl) {
-        titleLink.title = options.siteUrl
-        titleLink.href = options.siteUrl
+        imgLink.title = options.siteUrl
+        imgLink.href = options.siteUrl
     }
 
     // Ensure authError is set to false
@@ -188,7 +214,12 @@ async function initPopup(event) {
     } else if (!fileData.length) {
         return displayAlert({ message: 'No Files Returned.' })
     }
-    document.body.style.minHeight = '300px'
+    if (popupView !== 'popup') {
+        console.debug('%c SET: panel WxH', 'color: Lime')
+        document.body.style.width = '100%'
+    } else {
+        document.body.style.minHeight = '300px'
+    }
 
     // if (fileData.length < 8) {
     //     document.body.style.minHeight = '340px'
@@ -198,10 +229,14 @@ async function initPopup(event) {
     // Update table should only be called here, changes should use initPopup()
     updateTable(fileData, options)
 
-    if (platform.os !== 'android') {
+    if (platform.os !== 'android' && popupView === 'popup') {
         if (document.documentElement.scrollHeight > 600) {
             document.body.style.marginRight = '15px'
             document.body.style.width = `${document.body.clientWidth - 15}px`
+            console.debug(
+                `%c SET: width: ${document.body.clientWidth - 15}`,
+                'color: Yellow'
+            )
         }
     }
 
@@ -213,10 +248,11 @@ async function initPopup(event) {
     // File Links are re-generated, eventListener re-addd
     document
         .querySelectorAll('a[href]')
-        .forEach((el) => el.addEventListener('click', popupLinks))
+        .forEach((el) => el.addEventListener('click', linkClick))
 
     // Re-init clipboardJS after updateTable
-    new ClipboardJS('.clip')
+    // noinspection TypeScriptUMDGlobal
+    new ClipboardJS('.clip') // NOSONAR
 
     // Enable Popup Mouseover Preview if popupPreview
     timeout = options.popupTimeout * 1000
@@ -280,26 +316,39 @@ function initUppy(options) {
 
     uppyModal._element.addEventListener('hidden.bs.modal', (event) => {
         console.debug('hidden.bs.modal:', event)
+        // noinspection JSUnresolvedReference
         uppy.cancelAll()
     })
 }
 
 /**
- * Popup Links Click Callback
- * Firefox requires a call to window.close()
- * @function popupLinks
+ * Link Click Callback
+ * Note: Firefox popup requires a call to window.close()
+ * @function linkClick
  * @param {MouseEvent} event
+ * @param {Boolean} [close]
  */
-async function popupLinks(event) {
-    console.debug('popupLinks:', event)
+export async function linkClick(event, close = true) {
+    console.debug('linkClick:', close, event)
     event.preventDefault()
-    const anchor = event.target.closest('a')
-    const href = anchor.getAttribute('href').replace(/^\.+/g, '')
-    console.debug(`href: ${href}`, anchor)
+    const href = event.currentTarget.getAttribute('href').replace(/^\.+/g, '')
+    console.debug('href:', href)
     let url
-    if (href.endsWith('html/options.html')) {
-        chrome.runtime.openOptionsPage()
-        return window.close()
+    if (href.startsWith('#')) {
+        console.debug('return on anchor link')
+        return
+    } else if (href.endsWith('html/options.html')) {
+        await chrome.runtime.openOptionsPage()
+        if (close) window.close()
+        return
+        // } else if (href.endsWith('html/panel.html')) {
+        //     await openExtPanel()
+        //     if (close) window.close()
+        //     return
+    } else if (href.endsWith('html/sidepanel.html')) {
+        openSidePanel()
+        if (close) window.close()
+        return
     } else if (href.startsWith('http')) {
         url = href
     } else {
@@ -307,7 +356,7 @@ async function popupLinks(event) {
     }
     console.debug('url:', url)
     await chrome.tabs.create({ active: true, url })
-    return window.close()
+    if (close) window.close()
 }
 
 /**
@@ -358,10 +407,11 @@ async function saveOptions(event) {
             initPopupMouseover()
         } else {
             console.debug('popupPreview Disabled. Removing Event Listeners...')
-            document.querySelectorAll('.link-underline').forEach((el) => {
+            document.querySelectorAll('.mouse-link').forEach((el) => {
                 el.removeEventListener('mouseover', onMouseOver)
-                el.removeEventListener('mouseleave', onMouseLeave)
+                // el.removeEventListener('mouseleave', onMouseLeave)
             })
+            filesTable.removeEventListener('mouseleave', onMouseLeave)
             mediaOuter.classList.add('d-none')
         }
     }
@@ -403,7 +453,7 @@ async function authCredentials(event) {
  */
 function genLoadingData(rows) {
     console.debug('genLoadingData:', rows)
-    const number = parseInt(rows, 10) // parseInt is redundant
+    const number = parseInt(rows.toString(), 10)
     if (number > 0) {
         filesTable.classList.remove('d-none')
         const tbody = filesTable.querySelector('tbody')
@@ -506,6 +556,7 @@ function updateTable(data, options) {
         div.appendChild(faHourglass.cloneNode(true))
 
         if (options.popupIcons) {
+            // noinspection JSIgnoredPromiseFromCall
             updateFileIcons(data[i], div)
         }
 
@@ -532,6 +583,7 @@ function updateTable(data, options) {
             .querySelector('.clone > .dropdown-menu')
             .cloneNode(true)
         drop.id = `ctx-${i}`
+        // noinspection JSIgnoredPromiseFromCall
         updateContextMenu(drop, data[i])
         const fileName = drop.querySelector('li.mouse-link')
         fileName.innerText = data[i].name
@@ -894,6 +946,7 @@ function displayAlert({ message, type = 'warning', auth = false } = {}) {
     if (auth) {
         authAlert.classList.remove('d-none')
         authError = true
+        // noinspection JSIgnoredPromiseFromCall
         checkSiteAuth()
     }
 }
@@ -982,7 +1035,7 @@ function onMouseOver(event) {
     }
 }
 
-function onMouseLeave(event) {
+function onMouseLeave() {
     // console.debug(`onMouseLeave: ${mouseRow}:`, event.target)
     // const tr = event.target.closest('tr')
     // const tr = document.getElementById(mouseRow)
@@ -1005,4 +1058,40 @@ function onMouseLeave(event) {
         mediaImage.src = loadingImage
         timeoutID = null
     }, timeout)
+}
+
+/**
+ * Open Pop Out Click Callback
+ * @function popOutClick
+ * @param {MouseEvent} event
+ * @param {Boolean} [close]
+ */
+async function popOutClick(event, close = true) {
+    console.debug('popOutClick:', event)
+    await chrome.storage.local.set({ popupView: 'panel' })
+    await chrome.action.setPopup({ popup: '' })
+    await openExtPanel()
+    if (close) window.close()
+}
+
+/**
+ * Open Pop Out Click Callback
+ * @function popInClick
+ * @param {MouseEvent} event
+ * @param {Boolean} [close]
+ */
+async function popInClick(event, close = true) {
+    console.debug('popInClick:', event)
+    await chrome.storage.local.set({ popupView: 'popup' })
+    const popup = chrome.runtime.getURL('/html/popup.html')
+    try {
+        await chrome.action.setPopup({ popup })
+        // TODO: Chrome Error: Extension does not have a popup on the active tab
+        // await chrome.runtime.sendMessage('openPopup')
+        // TODO: Chrome Error: Browser window has no toolbar.
+        await chrome.action.openPopup()
+    } catch (e) {
+        console.debug(e)
+    }
+    if (close) window.close()
 }
